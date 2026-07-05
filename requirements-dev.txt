@@ -1,0 +1,9 @@
+# MWGA development requirements
+#
+# The test suite (test_mwga.py) is Qt-free and does not import the panel, so it
+# runs without PyQt6. Install the runtime requirements too if you also want to
+# launch the GUI.
+
+-r requirements.txt
+
+pytest>=8.0

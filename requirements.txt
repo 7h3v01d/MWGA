@@ -1,0 +1,9 @@
+# MWGA runtime requirements
+#
+# The domain, engine, profiles and CLI are pure standard library — they need
+# nothing here. The only third-party dependency is the PyQt6 GUI.
+#
+# NOTE: the panel imports PyQt6 explicitly. PySide6 is NOT a drop-in here
+# without a small shim, so install PyQt6 for the desktop UI.
+
+PyQt6>=6.5
