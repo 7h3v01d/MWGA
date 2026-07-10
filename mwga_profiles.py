@@ -97,6 +97,20 @@ PROFILES: list[Profile] = [
         tags=("ux",),
     ),
     Profile(
+        id="legacy_compat",
+        name="Legacy software support",
+        description="Enable the runtime components and path support that Win11 "
+                    "leaves off, which many older programs need. No security "
+                    "downgrade; the per-app shims and homebrew unblocks are "
+                    "left for you to apply individually.",
+        tweak_ids=(
+            "compat.dotnet35",
+            "compat.directplay",
+            "perf.long_paths",
+        ),
+        tags=("legacy",),
+    ),
+    Profile(
         id="ssd_services",
         name="SSD service trim",
         description="Disable prefetch and search indexing. Sensible on an "

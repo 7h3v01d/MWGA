@@ -560,6 +560,108 @@ def test_batch_preview_reports_aggregate(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+#  AppCompatLayersOp — token merge semantics (no real registry)               #
+# --------------------------------------------------------------------------- #
+class FakeLayers:
+    """Stand-in for the Layers registry value, injected into an op subclass."""
+    def __init__(self, initial=None):
+        self.value = initial  # None == absent
+
+
+def _appcompat_op(store: FakeLayers, add, remove=()):
+    from mwga_catalog import AppCompatLayersOp
+
+    class _Op(AppCompatLayersOp):
+        def _read(self):
+            return store.value
+
+        def _write(self, value):
+            store.value = value
+
+        def _delete(self):
+            store.value = None
+
+    return _Op(exe_path="C:\\game.exe", add=tuple(add), remove=tuple(remove))
+
+
+def test_appcompat_adds_token_preserving_others():
+    store = FakeLayers("~ HIGHDPIAWARE")
+    op = _appcompat_op(store, add=["RUNASADMIN"])
+    op.apply()
+    toks = store.value.split()
+    assert "RUNASADMIN" in toks and "HIGHDPIAWARE" in toks and toks[0] == "~"
+
+
+def test_appcompat_from_absent_adds_marker():
+    store = FakeLayers(None)
+    op = _appcompat_op(store, add=["RUNASADMIN"])
+    assert op.current_state() is OpState.ABSENT
+    op.apply()
+    assert store.value.split() == ["~", "RUNASADMIN"]
+    assert op.current_state() is OpState.DESIRED
+
+
+def test_appcompat_mode_is_mutually_exclusive():
+    store = FakeLayers("~ WIN7RTM")
+    op = _appcompat_op(store, add=["WIN8RTM"])
+    op.apply()
+    toks = store.value.split()
+    assert "WIN8RTM" in toks and "WIN7RTM" not in toks  # mode swap, not stack
+
+
+def test_appcompat_restore_exact_prior():
+    store = FakeLayers("~ HIGHDPIAWARE")
+    op = _appcompat_op(store, add=["RUNASADMIN"])
+    snap = op.snapshot()
+    op.apply()
+    op.restore(snap)
+    assert store.value == "~ HIGHDPIAWARE"  # untouched other token preserved
+
+
+def test_appcompat_restore_to_absent():
+    store = FakeLayers(None)
+    op = _appcompat_op(store, add=["RUNASADMIN"])
+    snap = op.snapshot()
+    op.apply()
+    op.restore(snap)
+    assert store.value is None
+
+
+def test_appcompat_bind_substitutes_exe():
+    t = cat.REGISTRY.get("compat.run_as_admin")
+    bound = bind_params(t, {"exe": "/tmp"}, must_exist=True)
+    assert bound.operations[0].exe_path == "/tmp"
+    assert t.operations[0].exe_path == "{exe}"  # original untouched
+
+
+# --------------------------------------------------------------------------- #
+#  Advisory (report-only) tweaks                                              #
+# --------------------------------------------------------------------------- #
+def test_advisory_apply_never_writes(applier_factory):
+    store = {"k": "off"}
+    t = dataclasses.replace(make_tweak(store=store), advisory=True,
+                            advice="do it in Settings", id="adv.x")
+    res = applier_factory(t).apply("adv.x")
+    assert res.status is ApplyStatus.ADVISORY
+    assert store["k"] == "off"          # engine did not write
+    assert "Settings" in res.message
+
+
+def test_advisory_revert_noop(applier_factory):
+    store = {"k": "off"}
+    t = dataclasses.replace(make_tweak(store=store), advisory=True, id="adv.y")
+    app = applier_factory(t)
+    app.backups.save("adv.y", {"0": {"present": True, "value": "off"}})
+    res = app.revert("adv.y")
+    assert res.status is ApplyStatus.ADVISORY
+
+
+def test_sac_status_is_advisory():
+    t = cat.REGISTRY.get("compat.smart_app_control_status")
+    assert t.advisory and t.advice
+
+
+# --------------------------------------------------------------------------- #
 #  Windows-only: real registry round-trip (scratch HKCU, no admin)            #
 # --------------------------------------------------------------------------- #
 @pytest.mark.skipif(not IS_WIN, reason="registry tests require Windows")

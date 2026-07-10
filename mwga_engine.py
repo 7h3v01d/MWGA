@@ -38,6 +38,7 @@ from typing import Any, Callable, Optional
 
 from mwga_catalog import (
     ABSENT,
+    AppCompatLayersOp,
     CommandOp,
     Operation,
     ParamSpec,
@@ -172,6 +173,11 @@ def _bind_registry_op(op: RegistryOp, key: str, raw: str) -> RegistryOp:
     )
 
 
+def _bind_appcompat_op(op: AppCompatLayersOp, key: str, raw: str) -> AppCompatLayersOp:
+    # exe_path is a registry value NAME, not a shell arg — substitute raw.
+    return dataclasses.replace(op, exe_path=_sub(op.exe_path, key, raw))
+
+
 def bind_params(
     tweak: Tweak,
     values: Optional[dict[str, str]] = None,
@@ -202,6 +208,8 @@ def bind_params(
         for key, raw in clean.items():
             if isinstance(new_op, CommandOp):
                 new_op = _bind_command_op(new_op, key, raw, ps_single_quote_escape(raw))
+            elif isinstance(new_op, AppCompatLayersOp):
+                new_op = _bind_appcompat_op(new_op, key, raw)
             elif isinstance(new_op, RegistryOp):
                 new_op = _bind_registry_op(new_op, key, raw)
         ops.append(new_op)
@@ -368,6 +376,7 @@ class ApplyStatus(Enum):
     SKIPPED_NA = "skipped_not_applicable"
     ABORTED_RESTORE = "aborted_restore_point"
     DRY_RUN = "dry_run"
+    ADVISORY = "advisory"
     ERROR = "error"
 
 
@@ -470,6 +479,12 @@ class GovernedApplier:
             return ApplyResult(ApplyStatus.SKIPPED_NA, tweak_id,
                                message="not applicable to this machine")
 
+        # advisory (report-only): never written by the engine
+        if tweak.advisory:
+            self.audit.append("advisory", tweak_id=tweak_id)
+            return ApplyResult(ApplyStatus.ADVISORY, tweak_id,
+                               message=tweak.advice or "advisory only — not applied")
+
         before = tweak.detect()
         req = self._request(tweak, before)
 
@@ -543,6 +558,9 @@ class GovernedApplier:
             return ApplyResult(ApplyStatus.ERROR, tweak_id,
                                message="no backup found")
         tweak = self._resolve(tweak_id, params)
+        if tweak.advisory:
+            return ApplyResult(ApplyStatus.ADVISORY, tweak_id,
+                               message="advisory only — nothing to revert")
         try:
             tweak.revert(rec.data)
         except Exception as exc:  # noqa: BLE001

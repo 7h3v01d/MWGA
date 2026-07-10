@@ -56,6 +56,7 @@ EXIT_AUDIT_BROKEN = 6
 _STATUS_EXIT = {
     ApplyStatus.APPLIED: EXIT_OK,
     ApplyStatus.DRY_RUN: EXIT_OK,
+    ApplyStatus.ADVISORY: EXIT_OK,
     ApplyStatus.DENIED: EXIT_DENIED,
     ApplyStatus.ABORTED_RESTORE: EXIT_ABORTED,
     ApplyStatus.SKIPPED_NA: EXIT_NOT_APPLICABLE,
@@ -235,9 +236,14 @@ def cmd_apply(args) -> int:
     if args.id not in {t.id for t in REGISTRY}:
         _err(f"unknown tweak: {args.id}")
         return EXIT_ERROR
+    tweak = REGISTRY.get(args.id)
+    if tweak.advisory:
+        print(f"[advisory] {tweak.name} — state: {_safe_state(tweak).value}")
+        print(f"  {tweak.advice}")
+        return EXIT_OK
     if not args.yes:
         print(f"[denied] apply needs --yes")
-        if REGISTRY.get(args.id).risk is RiskLevel.HIGH:
+        if tweak.risk is RiskLevel.HIGH:
             print("  (HIGH-risk: also requires --i-understand)")
         return EXIT_DENIED
 
@@ -278,8 +284,11 @@ def cmd_run_profile(args) -> int:
     applier = _build_applier(args)
     runner = ProfileRunner(applier)
 
-    # deny-first for HIGH: refuse the whole batch rather than partially apply
     plan = runner.preview(args.id)
+    if not args.yes:
+        print(f"[denied] run-profile needs --yes")
+        return EXIT_DENIED
+    # deny-first for HIGH: refuse the whole batch rather than partially apply
     if plan.needs_double_confirm and not args.i_understand:
         print(f"[denied] profile '{args.id}' contains HIGH-risk changes:")
         for it in plan.high_risk_items:

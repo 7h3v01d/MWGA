@@ -424,6 +424,144 @@ class CommandOp(Operation):
 
 
 # --------------------------------------------------------------------------- #
+#  AppCompatLayersOp — per-app compatibility shims                            #
+# --------------------------------------------------------------------------- #
+# The AppCompatFlags\Layers value for an exe is a single space-joined token
+# string (e.g. "~ RUNASADMIN WIN8RTM HIGHDPIAWARE"). Multiple shims share that
+# one value, so we merge/remove individual tokens rather than overwrite — a
+# naive write would clobber a user's other shims for the same program.
+_LAYERS_PATH = (
+    "Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers"
+)
+# Compatibility-mode tokens are mutually exclusive; setting one clears the rest.
+COMPAT_MODE_TOKENS = (
+    "WIN95", "WIN98", "WINME", "WINXPSP2", "WINXPSP3", "VISTARTM",
+    "VISTASP1", "VISTASP2", "WIN7RTM", "WIN8RTM",
+)
+
+
+@dataclass
+class AppCompatLayersOp(Operation):
+    """
+    Ensure a set of compatibility tokens is present (and another set absent) for
+    one executable, preserving any unrelated tokens the user already set.
+
+    `exe_path` is the value name (the full path to the .exe) and is typically a
+    bound {exe} parameter. Scope defaults to per-user (HKCU), which needs no
+    admin.
+    """
+
+    exe_path: str
+    add: tuple[str, ...]
+    remove: tuple[str, ...] = ()
+    hive: str = "HKCU"
+    kind: str = field(default="appcompat", init=False)
+
+    # -- token helpers ------------------------------------------------------ #
+    def _read(self) -> Optional[str]:
+        if not _WINREG:
+            raise NotSupportedError("winreg unavailable")
+        try:
+            with winreg.OpenKey(
+                _hive(self.hive), _LAYERS_PATH, 0,
+                winreg.KEY_READ | winreg.KEY_WOW64_64KEY,
+            ) as k:
+                return winreg.QueryValueEx(k, self.exe_path)[0]
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise OperationError(f"appcompat read failed: {exc}") from exc
+
+    @staticmethod
+    def _tokens(value: Optional[str]) -> list[str]:
+        return value.split() if value else []
+
+    def _compose(self, current: Optional[str]) -> str:
+        tokens = self._tokens(current)
+        if "~" not in tokens:
+            tokens.insert(0, "~")           # per-user layer marker, must lead
+        drop = set(self.remove)
+        # setting a compat mode clears the other modes
+        if any(t in COMPAT_MODE_TOKENS for t in self.add):
+            drop |= set(COMPAT_MODE_TOKENS) - set(self.add)
+        tokens = [t for t in tokens if t not in drop]
+        for t in self.add:
+            if t not in tokens:
+                tokens.append(t)
+        return " ".join(tokens)
+
+    def _write(self, value: str) -> None:
+        if not _WINREG:
+            raise NotSupportedError("winreg unavailable")
+        try:
+            with winreg.CreateKeyEx(
+                _hive(self.hive), _LAYERS_PATH, 0,
+                winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY,
+            ) as k:
+                winreg.SetValueEx(k, self.exe_path, 0, winreg.REG_SZ, value)
+        except OSError as exc:
+            raise OperationError(f"appcompat write failed: {exc}") from exc
+
+    def _delete(self) -> None:
+        if not _WINREG:
+            raise NotSupportedError("winreg unavailable")
+        try:
+            with winreg.OpenKey(
+                _hive(self.hive), _LAYERS_PATH, 0,
+                winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY,
+            ) as k:
+                winreg.DeleteValue(k, self.exe_path)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise OperationError(f"appcompat delete failed: {exc}") from exc
+
+    # -- Operation interface ------------------------------------------------ #
+    def describe(self) -> str:
+        bits = [f"+{t}" for t in self.add] + [f"-{t}" for t in self.remove]
+        return f"AppCompat[{self.exe_path}] {' '.join(bits)}"
+
+    def current_state(self) -> OpState:
+        try:
+            cur = self._read()
+        except NotSupportedError:
+            raise
+        except OperationError:
+            return OpState.UNKNOWN
+        toks = set(self._tokens(cur))
+        if cur is None:
+            return OpState.ABSENT
+        adds_present = all(t in toks for t in self.add)
+        removes_clear = all(t not in toks for t in self.remove)
+        if adds_present and removes_clear:
+            return OpState.DESIRED
+        if not any(t in toks for t in self.add):
+            return OpState.DEFAULT          # our change simply isn't present
+        return OpState.OTHER                # partially present
+
+    def snapshot(self) -> dict:
+        cur = self._read()
+        return {"present": cur is not None, "value": cur or ""}
+
+    def apply(self) -> None:
+        self._write(self._compose(self._read()))
+
+    def restore(self, snapshot: dict) -> None:
+        if snapshot.get("present"):
+            self._write(snapshot["value"])
+        else:
+            self._delete()
+
+    def reset_default(self) -> None:
+        # remove only the tokens we introduced; delete if nothing meaningful left
+        toks = [t for t in self._tokens(self._read()) if t not in self.add]
+        if not toks or toks == ["~"]:
+            self._delete()
+        else:
+            self._write(" ".join(toks))
+
+
+# --------------------------------------------------------------------------- #
 #  Value (de)serialisation for snapshots / equality                           #
 # --------------------------------------------------------------------------- #
 def _ser(value: Any) -> Any:
@@ -473,6 +611,8 @@ class Tweak:
     requires_admin: bool = True
     params: list[ParamSpec] = field(default_factory=list)
     applies_when: Optional[Callable[[], bool]] = None  # machine relevance gate
+    advisory: bool = False           # report-only; engine never writes it
+    advice: str = ""                 # guidance shown for advisory items
     tags: tuple[str, ...] = ()
 
     # -- engine-facing composition ----------------------------------------- #
@@ -958,6 +1098,265 @@ CATALOG: list[Tweak] = [
         requires_explorer_restart=True,
         tags=("explorer", "ux"),
     ),
+
+    # ----------------------- LEGACY COMPATIBILITY --------------------------- #
+    # Per-app compatibility shims (per-user HKCU Layers value — no admin).
+    Tweak(
+        id="compat.run_as_admin",
+        name="Run a program as administrator (per-app)",
+        category=Category.COMPAT,
+        risk=RiskLevel.MEDIUM,
+        summary="Always launch the chosen .exe elevated.",
+        rationale="Many older programs assume they can write to their own "
+                  "install folder or HKLM; Win11's tighter defaults break that. "
+                  "A per-app elevation shim fixes the whole class.",
+        tradeoff="That program always runs with full privileges — only shim "
+                 "software you trust.",
+        operations=[AppCompatLayersOp(exe_path="{exe}", add=("RUNASADMIN",))],
+        requires_admin=False,
+        params=[ParamSpec("exe", "Program (.exe)", kind="path")],
+        tags=("legacy", "compat", "shim"),
+    ),
+    Tweak(
+        id="compat.mode_win8",
+        name="Windows 8 compatibility mode (per-app)",
+        category=Category.COMPAT,
+        risk=RiskLevel.LOW,
+        summary="Run the chosen .exe in Windows 8 compatibility mode.",
+        rationale="Programs that worked on an earlier OS and misbehave on Win11 "
+                  "often run correctly under a compatibility mode.",
+        tradeoff="Sets a compatibility layer for that one program only.",
+        operations=[AppCompatLayersOp(exe_path="{exe}", add=("WIN8RTM",))],
+        requires_admin=False,
+        params=[ParamSpec("exe", "Program (.exe)", kind="path")],
+        tags=("legacy", "compat", "shim"),
+    ),
+    Tweak(
+        id="compat.mode_win7",
+        name="Windows 7 compatibility mode (per-app)",
+        category=Category.COMPAT,
+        risk=RiskLevel.LOW,
+        summary="Run the chosen .exe in Windows 7 compatibility mode.",
+        rationale="Older titles and utilities frequently target Win7 behaviour; "
+                  "this restores it for that program.",
+        tradeoff="Sets a compatibility layer for that one program only.",
+        operations=[AppCompatLayersOp(exe_path="{exe}", add=("WIN7RTM",))],
+        requires_admin=False,
+        params=[ParamSpec("exe", "Program (.exe)", kind="path")],
+        tags=("legacy", "compat", "shim"),
+    ),
+    Tweak(
+        id="compat.high_dpi_override",
+        name="High-DPI scaling override (per-app)",
+        category=Category.COMPAT,
+        risk=RiskLevel.LOW,
+        summary="Force application-controlled DPI for a blurry old program.",
+        rationale="Legacy apps that render blurry or oversized on modern "
+                  "displays are usually fixed by overriding DPI scaling.",
+        tradeoff="None beyond how that program scales.",
+        operations=[AppCompatLayersOp(exe_path="{exe}", add=("HIGHDPIAWARE",))],
+        requires_admin=False,
+        params=[ParamSpec("exe", "Program (.exe)", kind="path")],
+        tags=("legacy", "compat", "dpi"),
+    ),
+    Tweak(
+        id="compat.per_app_fso_off",
+        name="Disable Fullscreen Optimizations (per-game)",
+        category=Category.COMPAT,
+        risk=RiskLevel.LOW,
+        summary="Force true exclusive fullscreen for one game.",
+        rationale="A targeted version of the global FSO fix — helps a single "
+                  "game with alt-tab, input lag or gamma issues without changing "
+                  "system-wide behaviour.",
+        tradeoff="None; per-game and reversible.",
+        operations=[AppCompatLayersOp(
+            exe_path="{exe}", add=("DISABLEDXMAXIMIZEDWINDOWEDMODE",))],
+        requires_admin=False,
+        params=[ParamSpec("exe", "Game (.exe)", kind="path")],
+        tags=("legacy", "gaming", "fullscreen"),
+    ),
+
+    # Optional features that Win11 ships disabled.
+    Tweak(
+        id="compat.dotnet35",
+        name="Enable .NET Framework 3.5",
+        category=Category.COMPAT,
+        risk=RiskLevel.MEDIUM,
+        summary="Install the on-demand .NET 3.5 (and 2.0/3.0) runtime.",
+        rationale="Win11 ships without .NET 3.5, so a large amount of older "
+                  "software hard-fails with 'requires .NET Framework 3.5'.",
+        tradeoff="Adds a legacy runtime component. Reversible.",
+        operations=[
+            CommandOp(
+                detect_cmd=["powershell", "-NoProfile", "-Command",
+                            "(Get-WindowsOptionalFeature -Online "
+                            "-FeatureName NetFx3).State"],
+                desired_signal="enabled",
+                default_signal="disabled",
+                apply_cmd=["powershell", "-NoProfile", "-Command",
+                           "Enable-WindowsOptionalFeature -Online "
+                           "-FeatureName NetFx3 -All -NoRestart"],
+                revert_cmd=["powershell", "-NoProfile", "-Command",
+                            "Disable-WindowsOptionalFeature -Online "
+                            "-FeatureName NetFx3 -NoRestart"],
+                shell_note="Windows optional feature NetFx3",
+            ),
+        ],
+        tags=("legacy", "dotnet"),
+    ),
+    Tweak(
+        id="compat.directplay",
+        name="Enable DirectPlay",
+        category=Category.COMPAT,
+        risk=RiskLevel.MEDIUM,
+        summary="Install the legacy DirectPlay component.",
+        rationale="Many older games won't launch on Win11 without DirectPlay, "
+                  "which is disabled by default.",
+        tradeoff="Adds a legacy networking component. Reversible.",
+        operations=[
+            CommandOp(
+                detect_cmd=["powershell", "-NoProfile", "-Command",
+                            "(Get-WindowsOptionalFeature -Online "
+                            "-FeatureName DirectPlay).State"],
+                desired_signal="enabled",
+                default_signal="disabled",
+                apply_cmd=["powershell", "-NoProfile", "-Command",
+                           "Enable-WindowsOptionalFeature -Online "
+                           "-FeatureName DirectPlay -All -NoRestart"],
+                revert_cmd=["powershell", "-NoProfile", "-Command",
+                            "Disable-WindowsOptionalFeature -Online "
+                            "-FeatureName DirectPlay -NoRestart"],
+                shell_note="Windows optional feature DirectPlay",
+            ),
+        ],
+        tags=("legacy", "gaming", "directplay"),
+    ),
+
+    # Homebrew / patcher / customizer enablement (security-lowering — scoped).
+    Tweak(
+        id="homebrew.defender_exclusion_folder",
+        name="Add a Defender exclusion for a mods/patch folder",
+        category=Category.COMPAT,
+        risk=RiskLevel.HIGH,
+        summary="Exclude one folder from real-time scanning.",
+        rationale="Patchers, trainers and customizers are frequently quarantined "
+                  "or blocked by real-time scanning. A folder-scoped exclusion "
+                  "unblocks them without disabling Defender.",
+        tradeoff="Anything inside the excluded folder is no longer scanned. "
+                 "Scope it to a specific game's mods folder — never a whole "
+                 "downloads drive.",
+        operations=[
+            CommandOp(
+                detect_cmd=["powershell", "-NoProfile", "-Command",
+                            "(Get-MpPreference).ExclusionPath -join ';'"],
+                desired_signal="{path}",
+                apply_cmd=["powershell", "-NoProfile", "-Command",
+                           "Add-MpPreference -ExclusionPath '{path}'"],
+                revert_cmd=["powershell", "-NoProfile", "-Command",
+                            "Remove-MpPreference -ExclusionPath '{path}'"],
+                shell_note="Defender folder exclusion",
+            ),
+        ],
+        params=[ParamSpec("path", "Mods / patch folder", kind="path")],
+        tags=("homebrew", "defender", "security"),
+    ),
+    Tweak(
+        id="homebrew.pua_off",
+        name="Disable Defender PUA / HackTool protection",
+        category=Category.COMPAT,
+        risk=RiskLevel.HIGH,
+        summary="Stop flagging trainers/patchers as potentially unwanted.",
+        rationale="PUA protection specifically flags the category of software "
+                  "trainers and game patchers fall into, blocking them even when "
+                  "the user wants them.",
+        tradeoff="Turns off a broad protection that also catches real adware and "
+                 "bundleware. Prefer a scoped folder exclusion where possible.",
+        operations=[
+            CommandOp(
+                detect_cmd=["powershell", "-NoProfile", "-Command",
+                            "(Get-MpPreference).PUAProtection"],
+                desired_signal="0",
+                default_signal="1",
+                apply_cmd=["powershell", "-NoProfile", "-Command",
+                           "Set-MpPreference -PUAProtection Disabled"],
+                revert_cmd=["powershell", "-NoProfile", "-Command",
+                            "Set-MpPreference -PUAProtection Enabled"],
+                shell_note="Defender PUA protection toggle",
+            ),
+        ],
+        tags=("homebrew", "defender", "security"),
+    ),
+    Tweak(
+        id="homebrew.motw_off",
+        name="Stop tagging downloaded files (Mark-of-the-Web)",
+        category=Category.COMPAT,
+        risk=RiskLevel.HIGH,
+        summary="Don't attach zone info to saved downloads.",
+        rationale="Downloaded patchers and customizers get a 'came from the "
+                  "internet' tag that SmartScreen and SAC use to block them. "
+                  "Suppressing it stops that class of block.",
+        tradeoff="Removes the internet-origin flag from ALL downloads, not just "
+                 "the ones you trust — a real reduction in a useful warning.",
+        operations=[
+            _reg("HKCU",
+                 "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\"
+                 "Attachments", "SaveZoneInformation", RegType.DWORD, 1, ABSENT,
+                 create_key=True),
+        ],
+        tags=("homebrew", "motw", "security"),
+    ),
+    Tweak(
+        id="homebrew.disable_cfg_for_exe",
+        name="Disable Control Flow Guard for one game (per-exe)",
+        category=Category.COMPAT,
+        risk=RiskLevel.MEDIUM,
+        summary="Turn off CFG mitigation for a single executable.",
+        rationale="Injection-based mods, ASI/script-hook loaders and some "
+                  "trainers are blocked by exploit-protection mitigations like "
+                  "CFG. Disabling it for one game's exe lets them attach.",
+        tradeoff="Lowers exploit hardening for that one program.",
+        operations=[
+            CommandOp(
+                detect_cmd=["powershell", "-NoProfile", "-Command",
+                            "(Get-ProcessMitigation -Name '{exe}').CFG.Enable"],
+                desired_signal="off",
+                default_signal="on",
+                apply_cmd=["powershell", "-NoProfile", "-Command",
+                           "Set-ProcessMitigation -Name '{exe}' -Disable CFG"],
+                revert_cmd=["powershell", "-NoProfile", "-Command",
+                            "Set-ProcessMitigation -Name '{exe}' -Enable CFG"],
+                shell_note="Per-exe CFG mitigation toggle",
+            ),
+        ],
+        params=[ParamSpec("exe", "Game (.exe name or path)", kind="path")],
+        tags=("homebrew", "mitigation", "injection"),
+    ),
+
+    # Advisory (report-only) — cannot be safely toggled by a tool.
+    Tweak(
+        id="compat.smart_app_control_status",
+        name="Smart App Control — status (read-only)",
+        category=Category.COMPAT,
+        risk=RiskLevel.LOW,
+        summary="Report whether Smart App Control is blocking unsigned apps.",
+        rationale="Smart App Control (Win11 22H2+) silently blocks untrusted or "
+                  "unsigned binaries — a very common reason patchers, trainers "
+                  "and customizers fail to run at all.",
+        tradeoff="",
+        advisory=True,
+        advice="Smart App Control can only be changed in Windows Security → App "
+               "& browser control, and once it is turned off it cannot be turned "
+               "back on without reinstalling Windows. If this shows enforced or "
+               "evaluation, it may be what's blocking unsigned patchers. MWGA "
+               "will not change it for you.",
+        operations=[
+            _reg("HKLM",
+                 "SYSTEM\\CurrentControlSet\\Control\\CI\\Policy",
+                 "VerifiedAndReputablePolicyState", RegType.DWORD, 0, 1),
+        ],
+        applies_when=lambda: is_windows_11(),
+        tags=("homebrew", "sac", "advisory"),
+    ),
 ]
 
 
@@ -1025,6 +1424,8 @@ class TweakRegistry:
 def _op_template(op: Operation) -> str:
     if isinstance(op, CommandOp):
         return " ".join(op.apply_cmd + op.revert_cmd + [op.desired_signal])
+    if isinstance(op, AppCompatLayersOp):
+        return op.exe_path
     if isinstance(op, RegistryOp):
         return f"{op.path} {op.desired}"
     return ""
@@ -1035,7 +1436,8 @@ REGISTRY = TweakRegistry(CATALOG)
 
 __all__ = [
     "RiskLevel", "Category", "OpState", "TweakState", "RegType", "ABSENT",
-    "Operation", "RegistryOp", "ServiceOp", "CommandOp", "ParamSpec",
+    "Operation", "RegistryOp", "ServiceOp", "CommandOp", "AppCompatLayersOp",
+    "ParamSpec",
     "Tweak", "TweakRegistry", "CATALOG", "REGISTRY",
     "NotSupportedError", "OperationError",
     "windows_build", "is_windows_11", "is_windows_10",

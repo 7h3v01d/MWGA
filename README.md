@@ -13,9 +13,6 @@ pile of registry edits.
 
 ---
 
-<img width="1296" height="849" alt="MWGA" src="https://github.com/user-attachments/assets/59d46070-ff5b-433a-abee-2d62a60fca14" />
-
-
 ## Why it isn't a debloat script
 
 Debloat scripts fire a wall of edits with no record and no way back. MWGA treats

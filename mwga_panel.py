@@ -437,7 +437,7 @@ class TweakRow(QFrame):
         self.state_badge.setMinimumWidth(90)
         outer.addWidget(self.state_badge)
 
-        self.apply_btn = QPushButton("Apply")
+        self.apply_btn = QPushButton("Info" if tweak.advisory else "Apply")
         self.apply_btn.setObjectName("apply")
         self.apply_btn.clicked.connect(lambda: self.apply_requested.emit(tweak.id))
         outer.addWidget(self.apply_btn)
@@ -446,6 +446,8 @@ class TweakRow(QFrame):
         self.revert_btn.setObjectName("danger")
         self.revert_btn.clicked.connect(lambda: self.revert_requested.emit(tweak.id))
         outer.addWidget(self.revert_btn)
+        if tweak.advisory:
+            self.revert_btn.hide()
 
     def set_state(self, state: TweakState) -> None:
         self.state_badge.setText(STATE_LABEL[state])
@@ -454,6 +456,8 @@ class TweakRow(QFrame):
             f"color:{color}; border:1px solid {color}; padding:2px 8px;"
             f"font-size:10px; font-weight:700;"
         )
+        if self.tweak.advisory:
+            return  # Info button always available; no revert
         na = state is TweakState.NOT_APPLICABLE
         self.apply_btn.setEnabled(not na)
         self.revert_btn.setEnabled(not na)
@@ -597,6 +601,9 @@ class MWGAPanel(QWidget):
     @pyqtSlot(str)
     def _on_apply(self, tweak_id: str) -> None:
         tweak = self.registry.get(tweak_id)
+        if tweak.advisory:
+            QMessageBox.information(self, tweak.name, tweak.advice)
+            return
         params = self._collect_params(tweak)
         if params is None and tweak.params:
             return  # cancelled at param prompt
@@ -642,6 +649,7 @@ class MWGAPanel(QWidget):
         color = {
             ApplyStatus.APPLIED: PHOSPHOR,
             ApplyStatus.DRY_RUN: TEAL,
+            ApplyStatus.ADVISORY: TEAL,
             ApplyStatus.DENIED: TEXT_DIM,
             ApplyStatus.SKIPPED_NA: TEXT_DIM,
             ApplyStatus.ABORTED_RESTORE: AMBER,
