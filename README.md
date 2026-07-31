@@ -11,6 +11,8 @@ pile of registry edits.
 - **Target:** Windows 11 (Python 3.11). Detects the live OS and gates
   version-specific tweaks accordingly.
 
+<img width="1447" height="836" alt="screenshot" src="https://github.com/user-attachments/assets/b24caffc-52d8-4bfd-806a-f9ca4d5d85c2" />
+
 ---
 
 ## Why it isn't a debloat script
