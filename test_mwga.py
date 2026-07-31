@@ -627,10 +627,11 @@ def test_appcompat_restore_to_absent():
     assert store.value is None
 
 
-def test_appcompat_bind_substitutes_exe():
+def test_appcompat_bind_substitutes_exe(tmp_path):
     t = cat.REGISTRY.get("compat.run_as_admin")
-    bound = bind_params(t, {"exe": "/tmp"}, must_exist=True)
-    assert bound.operations[0].exe_path == "/tmp"
+    exe = str(tmp_path)
+    bound = bind_params(t, {"exe": exe}, must_exist=True)
+    assert bound.operations[0].exe_path == exe
     assert t.operations[0].exe_path == "{exe}"  # original untouched
 
 
