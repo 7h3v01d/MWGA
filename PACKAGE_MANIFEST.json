@@ -1,0 +1,70 @@
+{
+  "tool": "project_packager",
+  "version": "3.0.1",
+  "created_utc": "2026-07-31T01:37:51+00:00",
+  "project": "MWGA",
+  "file_count": 12,
+  "total_bytes": 244826,
+  "files": [
+    {
+      "path": ".packagerignore",
+      "size": 278,
+      "sha256": "99876039874b9eb02a3427060b197d05ad28e6601707ca39390cafcae9d34e8b"
+    },
+    {
+      "path": "assets/screenshot.png",
+      "size": 47434,
+      "sha256": "16df0a150ea2f63a3d844d4acf441c3fb625bb5ac35b09741db05edc57437eab"
+    },
+    {
+      "path": "mwga_catalog.py",
+      "size": 60174,
+      "sha256": "86e3d5b72d2bce471cd201232f0b768e61f5cca12569d26241a01fed2e0e6b2a"
+    },
+    {
+      "path": "mwga_cli.py",
+      "size": 14423,
+      "sha256": "7710034abb9f778ec839accce4872e31d2ee127cde0b8191712e40c605ed2f28"
+    },
+    {
+      "path": "mwga_engine.py",
+      "size": 22303,
+      "sha256": "7cb399d352b80a1553e1014d4b5d73b270a00d0265f12ff25847741e1d91c69e"
+    },
+    {
+      "path": "mwga_panel.py",
+      "size": 31363,
+      "sha256": "2e82dedebfb817164e204eb9199c8945aa1d0eb474e3b116dfb346b8af3c5bae"
+    },
+    {
+      "path": "mwga_profiles.py",
+      "size": 10728,
+      "sha256": "cbb21e5c1e7488815d219ceff69818fa918305901830d83c5aba10cda6e6b551"
+    },
+    {
+      "path": "README.md",
+      "size": 8170,
+      "sha256": "0f7921d3d2c2bdeee7e75af4176ae88fb336611cb5bb5333456aaba00cd43243"
+    },
+    {
+      "path": "requirements-dev.txt",
+      "size": 245,
+      "sha256": "608eaa24078852783f1aba134d7d86eb1cdf7c3adb6cb41eb49ec72a0853add3"
+    },
+    {
+      "path": "requirements.txt",
+      "size": 324,
+      "sha256": "fadd398194116f99a89e7e6d9f3ec856b4a4bfd15433d33db13016c84fd641c4"
+    },
+    {
+      "path": "setup.bat",
+      "size": 25612,
+      "sha256": "11fc88c64cc842b42b2a0cf2991a09aea4cd5e67cb3417a00e74655cece97acb"
+    },
+    {
+      "path": "test_mwga.py",
+      "size": 23772,
+      "sha256": "bebfef6c58967f0d063c5350cc24756b082535d5864b395263df6b4f925fe9e0"
+    }
+  ]
+}
